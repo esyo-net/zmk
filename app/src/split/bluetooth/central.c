@@ -206,14 +206,14 @@ static uint8_t split_central_notify_func(struct bt_conn *conn,
     return BT_GATT_ITER_CONTINUE;
 }
 
-static void split_central_subscribe(struct bt_conn *conn) {
+static int split_central_subscribe(struct bt_conn *conn, struct bt_gatt_subscribe_params *params) {
     struct peripheral_slot *slot = peripheral_slot_for_conn(conn);
     if (slot == NULL) {
         LOG_ERR("No peripheral state found for connection");
         return;
     }
 
-    int err = bt_gatt_subscribe(conn, &slot->subscribe_params);
+    int err = bt_gatt_subscribe(conn, params);
     switch (err) {
     case -EALREADY:
         LOG_DBG("[ALREADY SUBSCRIBED]");
@@ -230,46 +230,49 @@ static void split_central_subscribe(struct bt_conn *conn) {
 static uint8_t split_central_chrc_discovery_func(struct bt_conn *conn,
                                                  const struct bt_gatt_attr *attr,
                                                  struct bt_gatt_discover_params *params) {
+  int err;
+
     if (!attr) {
         LOG_DBG("Discover complete");
-        return BT_GATT_ITER_STOP;
-    }
-
-    if (!attr->user_data) {
-        LOG_ERR("Required user data not passed to discovery");
-        return BT_GATT_ITER_STOP;
-    }
-
-    struct peripheral_slot *slot = peripheral_slot_for_conn(conn);
-    if (slot == NULL) {
-        LOG_ERR("No peripheral state found for connection");
+        (void)memset(params, 0, sizeof(*params));
         return BT_GATT_ITER_STOP;
     }
 
     LOG_DBG("[ATTRIBUTE] handle %u", attr->handle);
 
-    if (!bt_uuid_cmp(((struct bt_gatt_chrc *)attr->user_data)->uuid,
-                     BT_UUID_DECLARE_128(ZMK_SPLIT_BT_CHAR_POSITION_STATE_UUID))) {
-        LOG_DBG("Found position state characteristic");
-        slot->discover_params.uuid = NULL;
-        slot->discover_params.start_handle = attr->handle + 2;
-        slot->discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
+      if (!bt_uuid_cmp(discover_params.uuid, BT_UUID_DECLARE_128(ZMK_SPLIT_BT_SERVICE_UUID))) {
+            memcpy(&uuid, BT_UUID_DECLARE_128(ZMK_SPLIT_BT_CHAR_POSITION_STATE_UUID), sizeof(uuid));
+            discover_params.uuid = &uuid.uuid;
+            discover_params.start_handle = attr->handle + 1;
+            discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
-        slot->subscribe_params.disc_params = &slot->sub_discover_params;
-        slot->subscribe_params.end_handle = slot->discover_params.end_handle;
-        slot->subscribe_params.value_handle = bt_gatt_attr_value_handle(attr);
-        slot->subscribe_params.notify = split_central_notify_func;
-        slot->subscribe_params.value = BT_GATT_CCC_NOTIFY;
-        split_central_subscribe(conn);
-    } else if (!bt_uuid_cmp(((struct bt_gatt_chrc *)attr->user_data)->uuid,
-                            BT_UUID_DECLARE_128(ZMK_SPLIT_BT_CHAR_RUN_BEHAVIOR_UUID))) {
-        LOG_DBG("Found run behavior handle");
-        slot->run_behavior_handle = bt_gatt_attr_value_handle(attr);
-    }
+            err = bt_gatt_discover(conn, &discover_params);
+            if (err) {
+                LOG_ERR("Discover failed (err %d)", err);
+            }
+        } else if (!bt_uuid_cmp(discover_params.uuid,
+                                BT_UUID_DECLARE_128(ZMK_SPLIT_BT_CHAR_POSITION_STATE_UUID))) {
+            memcpy(&uuid, BT_UUID_GATT_CCC, sizeof(uuid));
+            discover_params.uuid = &uuid.uuid;
+            discover_params.start_handle = attr->handle + 2;
+            discover_params.type = BT_GATT_DISCOVER_DESCRIPTOR;
+            subscribe_params.value_handle = bt_gatt_attr_value_handle(attr);
 
-    bool subscribed = (slot->run_behavior_handle && slot->subscribe_params.value_handle);
+            err = bt_gatt_discover(conn, &discover_params);
+            if (err) {
+                LOG_ERR("Discover failed (err %d)", err);
+            }
+        } else {
+            subscribe_params.notify = split_central_notify_func;
+            subscribe_params.value = BT_GATT_CCC_NOTIFY;
+            subscribe_params.ccc_handle = attr->handle;
 
-    return subscribed ? BT_GATT_ITER_STOP : BT_GATT_ITER_CONTINUE;
+            split_central_subscribe(conn, &subscribe_params);
+
+            return BT_GATT_ITER_STOP;
+        }
+
+        return BT_GATT_ITER_STOP;
 }
 
 static uint8_t split_central_service_discovery_func(struct bt_conn *conn,
